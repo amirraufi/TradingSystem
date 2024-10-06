@@ -1,0 +1,243 @@
+import pandas as pd
+import numpy as np
+
+BUSINESS_DAYS_IN_YEAR =256
+def value(
+    instrument_code: str,
+    adjusted_prices_dict: dict,
+    std_dev_dict: dict,
+    carry_prices_dict: dict,  ## not used
+    horizon_years: int,
+    smooth: int = 32,
+    scalar: float = 7.27,
+) -> pd.Series:
+    """
+    Calculate the value-based forecast for a given instrument.
+
+    Parameters:
+    - instrument_code: The code of the instrument (e.g., 'sp500', 'gas').
+    - adjusted_prices_dict: Dictionary of adjusted prices for each instrument.
+    - std_dev_dict: Standard deviation dictionary for each instrument.
+    - carry_prices_dict: Carry prices dictionary (not used in value function).
+    - horizon_years: The time horizon in years for relative price comparison.
+    - smooth: The smoothing factor for the exponential moving average (default is 32).
+    - scalar: Scaling factor for the final forecast (default is 7.27).
+
+    Returns:
+    - value_forecast: A time series of value-based forecast values.
+    """
+
+    # Calculate relative price dictionary based on adjusted prices and standard deviations
+    relative_price_dict = calculate_relative_price_dict(
+        std_dev_dict=std_dev_dict,
+        adjusted_prices_dict=adjusted_prices_dict,
+        asset_class_groupings=asset_class_groupings,  # Assuming this exists in the context
+    )
+
+    # Get the value forecast for the specific instrument
+    value_forecast = calculate_forecast_for_value(
+        relative_price=relative_price_dict[instrument_code],
+        horizon_years=horizon_years,
+        scalar=scalar,
+        smooth=smooth,
+    )
+
+    return value_forecast
+
+
+def calculate_forecast_for_value(
+    relative_price: pd.Series,
+    horizon_years: int,
+    smooth: int = 32,
+    scalar: float = 7.27,
+) -> pd.Series:
+    """
+    Calculates the value-based forecast based on relative price performance.
+
+    Parameters:
+    - relative_price: Pandas Series of the relative price data.
+    - horizon_years: Lookback period in years for relative price comparison.
+    - smooth: The smoothing factor for the exponential moving average (default is 32).
+    - scalar: Scalar applied to the final forecast (default is 7.27).
+
+    Returns:
+    - smoothed_forecast: Smoothed value forecast values.
+    """
+
+    # Convert the horizon in years to business days
+    horizon_days = BUSINESS_DAYS_IN_YEAR * horizon_years
+
+    # Calculate the outperformance as the relative price change over the horizon
+    outperformance = (relative_price - relative_price.shift(horizon_days)) / horizon_days
+
+    # The value forecast is the negative of the outperformance (mean reversion)
+    forecast = -outperformance
+
+    # Smooth the forecast using exponential moving average (EWMA)
+    smoothed_forecast = forecast.ewm(span=smooth, min_periods=1).mean()
+
+    return smoothed_forecast * scalar
+
+def adjust_positions_based_on_relative_price(
+    current_positions_dict: dict, relative_price_forecast_dict: dict
+) -> dict:
+    adjusted_positions = {
+        instrument: position + (forecast / 10)  # Adjust by a fraction of the forecast
+        for instrument, position in current_positions_dict.items()
+        for instrument, forecast in relative_price_forecast_dict.items()
+    }
+    return adjusted_positions
+def calculate_relative_price_forecast(
+    relative_price_dict: dict, mean_reversion_factor: float = 1.0
+) -> dict:
+    return {
+        instrument: (-mean_reversion_factor * relative_price).clip(-20, 20)
+        for instrument, relative_price in relative_price_dict.items()
+    }
+def calculate_asset_class_momentum(
+    asset_class_price_dict: dict, momentum_window: int = 64
+) -> dict:
+    return {
+        asset_class: price.ewm(span=momentum_window).mean().diff()
+        for asset_class, price in asset_class_price_dict.items()
+    }
+def risk_adjusted_position_scaling(
+    positions_dict: dict, relative_price_dict: dict, volatility_threshold: float
+) -> dict:
+    return {
+        instrument: position if relative_price.std() < volatility_threshold else position * 0.5
+        for instrument, (position, relative_price) in zip(positions_dict.items(), relative_price_dict.values())
+    }
+def calculate_relative_price_dict(
+    adjusted_prices_dict: dict, std_dev_dict: dict, asset_class_groupings: dict
+) -> dict:
+    """
+    Calculates relative price for each instrument compared to its asset class.
+
+    :param adjusted_prices_dict: A dictionary containing adjusted prices for each instrument.
+    :param std_dev_dict: A dictionary containing standard deviation for each instrument.
+    :param asset_class_groupings: A dictionary mapping instruments to asset classes.
+    :return: A dictionary of relative prices for each instrument.
+    """
+    
+    # Step 1: Normalise prices using the standard deviation
+    normalised_price_dict = calculate_normalised_price_dict(
+        adjusted_prices_dict=adjusted_prices_dict, std_dev_dict=std_dev_dict
+    )
+
+    # Step 2: Calculate the average asset class price using the normalised prices
+    asset_class_price_dict = calculate_asset_class_price_dict(
+        normalised_price_dict=normalised_price_dict,
+        asset_class_groupings=asset_class_groupings,
+    )
+
+    # Step 3: Calculate relative price for each instrument by subtracting the asset class price from the instrument price
+    list_of_instruments = list(normalised_price_dict.keys())
+    relative_price_dict = {
+        instrument_code: relative_price_for_instrument(
+            instrument_code=instrument_code,
+            normalised_price_dict=normalised_price_dict,
+            asset_class_price_dict=asset_class_price_dict
+        )
+        for instrument_code in list_of_instruments
+    }
+
+    return relative_price_dict
+
+def calculate_asset_class_price_dict(
+    normalised_price_dict: dict, asset_class_groupings: dict
+):
+
+    list_of_instruments = list(normalised_price_dict.keys())
+    asset_class_price_dict = dict(
+        [
+            (
+                instrument_code,
+                calculate_asset_prices_for_instrument(
+                    instrument_code,
+                    normalised_price_dict=normalised_price_dict,
+                    asset_class_groupings=asset_class_groupings,
+                ),
+            )
+            for instrument_code in list_of_instruments
+        ]
+    )
+
+    return asset_class_price_dict
+def calculate_asset_prices_for_instrument(
+    instrument_code: str, normalised_price_dict: dict, asset_class_groupings: dict
+) -> pd.Series:
+
+    asset_class = get_asset_class_for_instrument(
+        instrument_code, asset_class_groupings=asset_class_groupings
+    )
+
+    return get_normalised_price_for_asset_class(
+        asset_class=asset_class,
+        asset_class_groupings=asset_class_groupings,
+        normalised_price_dict=normalised_price_dict,
+    )
+    
+def get_asset_class_for_instrument(
+    instrument_code: str, asset_class_groupings: dict
+) -> str:
+
+    possible_asset_classes = list(asset_class_groupings.keys())
+    asset_class = [
+        asset
+        for asset in possible_asset_classes
+        if instrument_code in asset_class_groupings[asset]
+    ][0]
+
+    return asset_class
+def get_normalised_price_for_asset_class(
+    asset_class: str, normalised_price_dict: dict, asset_class_groupings: dict
+) -> pd.Series:
+
+    # Wasteful rerunning this for each instrument but makes code simpler
+    instruments_in_asset_class = asset_class_groupings[asset_class]
+    list_of_normalised_prices_over_asset_class = [
+        normalised_price_dict[instrument_code]
+        for instrument_code in instruments_in_asset_class
+    ]
+    normalised_prices_over_asset_class = pd.concat(
+        list_of_normalised_prices_over_asset_class, axis=1
+    ).ffill()
+    normalised_returns_over_asset_class = normalised_prices_over_asset_class.diff()
+    average_normalised_return_over_asset_class = (
+        normalised_returns_over_asset_class.mean(axis=1)
+    )
+
+    asset_class_price = average_normalised_return_over_asset_class.cumsum()
+
+    return asset_class_price
+
+def relative_price_for_instrument(
+    instrument_code: str, normalised_price_dict: dict, asset_class_price_dict: dict
+) -> pd.Series:
+    """
+    Calculates the relative price of an instrument by comparing its normalised price 
+    to the average price of its asset class.
+
+    :param instrument_code: The specific instrument being evaluated.
+    :param normalised_price_dict: A dictionary of normalised prices for all instruments.
+    :param asset_class_price_dict: A dictionary of asset class average prices.
+    :return: A Pandas Series representing the relative price for the instrument.
+    """
+    
+    # Fetch the normalised price of the instrument
+    normalised_price = normalised_price_dict[instrument_code]
+    
+    # Fetch the asset class price for the same period
+    asset_class_price = asset_class_price_dict[instrument_code]
+    
+    # Align the index of the asset class price with the normalised price and forward-fill missing values
+    asset_class_price_matched = asset_class_price.reindex(normalised_price.index).ffill()
+    
+    # Calculate the relative price as the difference between the instrument's normalised price and the asset class price
+    relative_price = normalised_price - asset_class_price_matched
+    
+    # Replace zero values with NaN for better handling of missing data
+    relative_price[relative_price == 0] = np.nan
+
+    return relative_price

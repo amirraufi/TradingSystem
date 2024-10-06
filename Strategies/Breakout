@@ -1,0 +1,62 @@
+import pandas as pd
+import numpy as np
+def breakout(
+    instrument_code: str,
+    adjusted_prices_dict: dict,
+    std_dev_dict: dict,  ## not used
+    carry_prices_dict: dict,  ## not used
+    scalar: float = 1.0,
+    horizon: int = 10,
+) -> pd.Series:
+    """
+    Calculate the breakout forecast for the given instrument.
+    
+    Parameters:
+    - instrument_code: The code of the instrument (e.g., 'sp500', 'gas').
+    - adjusted_prices_dict: Dictionary of adjusted prices for each instrument.
+    - std_dev_dict: Standard deviation dictionary (not used in breakout function).
+    - carry_prices_dict: Carry prices dictionary (not used in breakout function).
+    - scalar: Scaling factor for the forecast (default is 1.0).
+    - horizon: The breakout horizon period (default is 10 days).
+    
+    Returns:
+    - breakout_forecast: A time series of breakout forecast values.
+    """
+
+    # Calculate the breakout forecast based on adjusted prices
+    breakout_forecast = calculate_forecast_for_breakout(
+        adjusted_price=adjusted_prices_dict[instrument_code],
+        horizon=horizon,
+        scalar=scalar,
+    )
+
+    return breakout_forecast
+
+
+def calculate_forecast_for_breakout(
+    adjusted_price: pd.Series, horizon: int = 10, scalar: float = 1.0
+) -> pd.Series:
+    """
+    Calculates the breakout forecast based on the price action.
+
+    Parameters:
+    - adjusted_price: Pandas Series of the adjusted price data.
+    - horizon: Lookback period for calculating max/min prices (default is 10 days).
+    - scalar: Scalar applied to the final forecast (default is 1.0).
+    
+    Returns:
+    - smoothed_forecast: Smoothed breakout forecast values.
+    """
+
+    # Calculate max, min, and mean prices over the given horizon
+    max_price = adjusted_price.rolling(horizon, min_periods=1).max()
+    min_price = adjusted_price.rolling(horizon, min_periods=1).min()
+    mean_price = (max_price + min_price) / 2
+
+    # Calculate the raw breakout forecast
+    raw_forecast = 40 * (adjusted_price - mean_price) / (max_price - min_price)
+
+    # Smooth the forecast using exponential moving average (EMA)
+    smoothed_forecast = raw_forecast.ewm(span=int(np.ceil(horizon / 4))).mean()
+
+    return smoothed_forecast * scalar
